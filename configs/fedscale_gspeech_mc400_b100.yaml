@@ -1,0 +1,16 @@
+dataset: gspeech
+model: melcnn
+distribution: noniid
+alpha: 0.5
+random_cost: fedscale_trace
+fedscale_client_profile_path: fedscale_device_info/client_device_capacity
+num_users: 1000
+concurrency: 400
+buffer_size: 100
+total_rounds: 500
+local_bs: 6
+local_period: 10
+lr: 0.2
+interval: 1
+seeds: [1, 2, 3, 4, 5]
+algorithms: [FedBuff, CA2FL, FedBuffMALight, CASA, FADAS, FedASMU, DirBridge]
