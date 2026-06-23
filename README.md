@@ -1,6 +1,6 @@
 # DirBridge Artifact
 
-This repository provides the code artifact for **DirBridge: A Lightweight Server-Side Group-Memory Cache for Buffered Asynchronous Federated Learning**.
+This repository provides the code artifact for **DirBridge: Scalable Direction-Group Memory for Latency-Biased Asynchronous Federated Data Streams**.
 
 DirBridge studies buffered asynchronous federated learning under latency-induced direction skew. The artifact contains the core implementation, selected baselines, reproduction scripts, result summarization utilities, dataset preparation notes, and configuration records used to reproduce the paper's main empirical claims.
 
@@ -243,8 +243,8 @@ If this artifact is used, please cite the corresponding DirBridge paper.
 
 ```bibtex
 @article{chen2026dirbridge,
-  title   = {DirBridge: A Lightweight Server-Side Group-Memory Cache for Buffered Asynchronous Federated Learning},
-  author  = {Chen, Yibo and others},
+  title   = {DirBridge: Scalable Direction-Group Memory for Latency-Biased Asynchronous Federated Data Streams},
+  author  = {Chen, Yibo and Liu, Zhizhong and Qin, Yunchuan and Tang, Zhuo and Li, Kenli},
   journal = {IEEE Transactions on Knowledge and Data Engineering},
   year    = {2026},
   note    = {Under review}
