@@ -1,8 +1,19 @@
 # DirBridge Artifact
 
-This repository contains supplemental material for **DirBridge: A Lightweight Server-Side Group-Memory Cache for Buffered Asynchronous Federated Learning**.
+This repository provides the code artifact for **DirBridge: A Lightweight Server-Side Group-Memory Cache for Buffered Asynchronous Federated Learning**.
 
-DirBridge studies buffered asynchronous federated learning under direction-skewed latency. The artifact includes the core implementation, the selected baselines used in the paper, reproduction scripts, result summarization utilities, and dataset preparation notes.
+DirBridge studies buffered asynchronous federated learning under latency-induced direction skew. The artifact contains the core implementation, selected baselines, reproduction scripts, result summarization utilities, dataset preparation notes, and configuration records used to reproduce the paper's main empirical claims.
+
+## Artifact Scope
+
+This artifact is intended to support the following checks:
+
+1. **Environment check**: verify that the main FedBuff and DirBridge code paths run on a small CIFAR-10 smoke test.
+2. **Main-result reproduction**: rerun the direction-skewed latency experiments and the FedScale-trace FEMNIST/GSpeech experiments.
+3. **Mechanism checks**: reproduce the direction-skew diagnostics, representation-module ablations, sensitivity analysis, and significance comparisons.
+4. **Configuration audit**: inspect the scripts and configuration files that define client sampling, latency simulation, group-memory settings, and result summarization.
+
+The repository does not include raw datasets. Some full experiments are compute-intensive; use the smoke test first to validate the environment.
 
 ## 1. Repository Layout
 
@@ -154,7 +165,7 @@ Run a small smoke test:
 bash scripts/run_quick_smoke.sh
 ```
 
-This runs FedBuff and DirBridge on a short CIFAR-10 setting with one seed.
+This runs FedBuff and DirBridge on a short CIFAR-10 setting with one seed. It is intended to check installation, dataset loading, logging, and the aggregation path; it is not expected to match paper-level accuracy.
 
 ## 5. Reproducing Main Results
 
@@ -200,9 +211,11 @@ python ds/compare_dirbridge_significance.py --help
 |---|---|
 | Main Dir-Skew accuracy tables | `scripts/run_dirskew_main.sh`, `ds/summarize_tail10.py` |
 | FedScale FEMNIST/GSpeech tables | `scripts/build_femnist_pt.py`, `scripts/export_client_selection.py`, `scripts/run_fedscale_femnist.sh`, `scripts/run_fedscale_gspeech.sh` |
+| Direction-skew diagnostic curves | training logs, processed metrics, and direction-skew summarization utilities in `ds/` |
 | Ablation study | `ds/summarize_dirbridge_ablation.py` |
 | Sensitivity study | `ds/summarize_dirbridge_sensitivity.py` |
 | Significance checks | `ds/compare_dirbridge_significance.py` |
+| Reproducibility configuration | `configs/`, shell scripts in `scripts/`, and dataset/client-selection exports |
 
 ## 8. Expected Outputs
 
@@ -218,10 +231,26 @@ Generated summary tables can be placed under:
 artifacts/paper_tables/
 ```
 
-## 9. Notes on Runtime
+## 9. Notes on Runtime and Reproducibility
 
 Full five-seed reproduction across all datasets and baselines is compute-intensive. The quick smoke test is intended only to check that the code path works; it is not expected to reproduce paper-level accuracy.
+
+For paper-level reproduction, use the shell scripts in `scripts/` as the primary entry points and keep the default seeds and delay seeds unless intentionally running additional trials. When reporting regenerated results, record the commit hash, GPU type, PyTorch/CUDA versions, and any dataset path changes.
 
 ## 10. Citation
 
 If this artifact is used, please cite the corresponding DirBridge paper.
+
+```bibtex
+@article{chen2026dirbridge,
+  title   = {DirBridge: A Lightweight Server-Side Group-Memory Cache for Buffered Asynchronous Federated Learning},
+  author  = {Chen, Yibo and others},
+  journal = {IEEE Transactions on Knowledge and Data Engineering},
+  year    = {2026},
+  note    = {Under review}
+}
+```
+
+## 11. Contact
+
+Please open an issue in this repository for artifact questions, missing script paths, or reproduction problems.
