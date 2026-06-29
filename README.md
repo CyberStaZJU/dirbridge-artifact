@@ -33,11 +33,28 @@ dirbridge-artifact/
 
 ## 2. Environment
 
-The experiments were developed with Python 3.8+ and PyTorch. Install dependencies with:
+The desktop reference environment is `/home/jczn2/.conda/envs/yibo`. Install dependencies with:
 
 ```bash
+conda activate yibo
 pip install -r requirements.txt
 ```
+
+The captured reference versions are also recorded in `requirements.txt` and `environment.yml`:
+
+- Python 3.9.23
+- NumPy 2.0.2
+- SciPy 1.13.1
+- PyTorch 2.8.0+cu128
+- TorchVision 0.23.0+cu128
+- CUDA 12.8, cuDNN 91002
+- Matplotlib 3.9.2
+- scikit-learn 1.6.1
+- PyYAML 6.0.3
+- Pillow 11.3.0
+- tqdm 4.67.1
+- pandas 2.3.3
+- GPU: NVIDIA GeForce RTX 5090 D
 
 A GPU is recommended for full reproduction. The quick smoke test can be used to verify the environment before launching the full multi-seed experiments.
 
@@ -216,6 +233,32 @@ python ds/compare_dirbridge_significance.py --help
 | Sensitivity study | `ds/summarize_dirbridge_sensitivity.py` |
 | Significance checks | `ds/compare_dirbridge_significance.py` |
 | Reproducibility configuration | `configs/`, shell scripts in `scripts/`, and dataset/client-selection exports |
+
+### One-command table reproduction scripts
+
+The following scripts provide one-command entry points for the main paper tables. They set the required environment variables and write logs/results under `artifacts/` by default. Override `PYTHON_BIN`, `CUDA_VISIBLE_DEVICES`, `SEEDS`, `OUT_ROOT`, `ALGOS`, or `FED_PROFILE` if needed.
+
+| Paper table | Script | Purpose / setting |
+|---|---|---|
+| Table 1 | `scripts/run_table1.sh` | Main 100-client image-dataset results under Dir-Skew latency, `(M_c,B)=(40,10)`, five seeds. Covers CIFAR-10, CIFAR-100, and TinyImageNet. |
+| Table 2 | `scripts/run_table2.sh` | Large-client natural-data results under FedScale trace, `(M_c,B)=(400,100)`, five seeds. Covers FEMNIST and GSpeech. |
+| Table 3 | `scripts/run_table3.sh` | Quantitative raw-buffer direction-skew `Phi_t` summary inputs; logs per-round direction-skew CSVs for CIFAR-10 Dir-Skew and FEMNIST FedScale. |
+| Table 4 | `scripts/run_table4.sh` | CIFAR-10 simulated-time convergence and server-side overhead under Dir-Skew, alpha=0.5, `(M_c,B)=(40,10)`. |
+| Table 5 | `scripts/run_table5.sh` | FEMNIST simulated-time convergence and server-side overhead under FedScale trace, `(M_c,B)=(400,100)`. |
+| Table 6 | `scripts/run_table6.sh` | DirBridge component ablation under Dir-Skew at alpha=0.5. Runs full, no EMA cache, random grouping, and no staleness filter variants. |
+
+Example:
+
+```bash
+bash scripts/run_table1.sh
+bash scripts/run_table2.sh
+```
+
+For faster smoke checks, restrict seeds and algorithms:
+
+```bash
+SEEDS="1" ALGOS="DirBridge FedBuff" bash scripts/run_table1.sh
+```
 
 ## 8. Expected Outputs
 
