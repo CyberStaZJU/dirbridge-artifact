@@ -1,0 +1,15 @@
+dataset: cifar
+model: resnet
+distribution: noniid
+alpha: 0.5
+random_cost: dir-skew
+num_users: 100
+concurrency: 40
+buffer_size: 10
+total_rounds: 500
+local_bs: 100
+local_period: 10
+lr: 0.01
+interval: 1
+seeds: [1, 2, 3, 4, 5]
+algorithms: [FedBuff, CA2FL, FedBuffMALight, CASA, FADAS, FedASMU, DirBridge]

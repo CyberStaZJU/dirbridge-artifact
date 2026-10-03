@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Local data and generated outputs
+data/*
+!data/client_selection/
+!data/client_selection/*.csv
+!data/client_selection/*.pkl
+logs/
+AsyncBuffer_Experiment/
+fedscale_device_info/*
+!fedscale_device_info/
+!fedscale_device_info/README.md
+artifacts/processed_metrics/*
+!artifacts/processed_metrics/.gitkeep
+artifacts/paper_tables/*
+!artifacts/paper_tables/.gitkeep
+artifacts/paper_figures/*
+!artifacts/paper_figures/.gitkeep
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Paper sources are intentionally excluded from the artifact repository.
+DirBridge_paper/
+*.tex
+*.pdf
