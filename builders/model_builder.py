@@ -26,6 +26,22 @@ def build_model(args):
     else:
         raise ValueError(f'Unrecognized model/dataset combination: model={args.model}, dataset={args.dataset}')
 
+    policy = getattr(args, 'bn_buffer_policy', 'endpoint_mean')
+    if policy not in ('endpoint_mean', 'legacy_delta'):
+        raise ValueError(f'Unsupported BN buffer policy: {policy}')
+    supported = str(getattr(args, 'algo', '')).lower() in (
+        'fedbuff',
+        'ca2fl',
+        'fadas',
+        'dirbridge',
+    )
+    endpoint_mean = supported and policy == 'endpoint_mean'
+    args.resolved_bn_buffer_policy = 'endpoint_mean' if endpoint_mean else 'legacy_delta'
+    args.bn_buffer_policy_qualification = (
+        'unqualified' if not supported else
+        ('endpoint_repair' if endpoint_mean else 'diagnostic_reference_only')
+    )
+    net_glob._asyncbuffer_trainable_state_only = endpoint_mean
     net_glob.train()
     w_glob = model_param_dict(net_glob, device=args.device)
     return net_glob, w_glob

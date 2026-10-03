@@ -5,7 +5,10 @@ import numpy as np
 import torch
 
 from models.local_update import LocalSGD
-from utils.state_dict_ops import load_param_dict_, model_param_dict, sd_average, sd_sub, sd_zero_like
+from utils.state_dict_ops import (
+    load_param_dict_, model_param_dict, sd_average, sd_sub, sd_zero_like,
+    init_buffer_endpoints, capture_buffer_endpoint, apply_buffer_endpoints_,
+)
 
 
 def _trainable_param_keys(model):
@@ -30,6 +33,7 @@ def _local_train_delta(state, args, idx):
         nums=state['num_samples'][idx],
     )
     w_local = local.train(net=net)
+    capture_buffer_endpoint(state, idx, net)
     delta = sd_sub(w_local, w_start)
     del w_start, w_local, net
     return delta
@@ -104,6 +108,7 @@ def init_state(state, args, random_cost):
     state['delays'] = [0] * num_users
     state['global_cost'] = 0
     state['iterations'] = 0
+    init_buffer_endpoints(state, num_users)
 
     state['fadas_m'] = sd_zero_like(state['w_glob'])
     state['fadas_v'] = sd_zero_like(state['w_glob'])
@@ -157,6 +162,7 @@ def run_round(state, args, random_cost):
 
     step_lr = _delay_adaptive_lr(args, max_delay)
     _apply_adaptive_update(state, args, step_lr, aggregated_delta)
+    apply_buffer_endpoints_(state, buffer_list)
     state['fadas_last_max_delay'] = max_delay
     state['fadas_last_lr'] = step_lr
 

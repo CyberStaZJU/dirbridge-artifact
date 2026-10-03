@@ -37,7 +37,7 @@ VARIANTS="${VARIANTS:-none no_ema_cache random_grouping no_staleness_filter}"
 for seed in ${SEEDS}; do
   for dataset in ${DATASETS}; do
     for variant in ${VARIANTS}; do
-      run_one "${TABLE}" "${dataset}_alpha0.5" "${dataset}" "DirBridge" "DirBridge_${variant}" "${seed}"         --distribution noniid --alpha 0.5 --random_cost mild_label_correlated_hierarchical         --num_users 100 --concurrency 40 --buffer_size 10 --total_rounds 500         --model resnet --lr 0.01 --local_bs 100 --local_period 10 --interval 1         --dirbridge_ablation "${variant}"
+      run_one "${TABLE}" "${dataset}_alpha0.5" "${dataset}" "DirBridge" "DirBridge_${variant}" "${seed}"         --distribution noniid --alpha 0.5 --random_cost mild_label_correlated_hierarchical         --num_users 100 --concurrency 40 --buffer_size 10 --total_rounds 500         --model resnet --lr 0.01 --local_bs 100 --local_period 10 --interval 1 --bn_buffer_policy endpoint_mean         --dirbridge_ablation "${variant}"
     done
   done
 done

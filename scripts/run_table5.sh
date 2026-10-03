@@ -38,6 +38,6 @@ FED_PROFILE="${FED_PROFILE:-fedscale_device_info/client_device_capacity}"
 mkdir -p "${SYSTEM_ROOT}"
 for seed in ${SEEDS}; do
   for algo in ${ALGOS}; do
-    run_one "${TABLE}" "femnist_fedscale" "femnist" "${algo}" "${algo}" "${seed}"       --distribution noniid --alpha 0.5 --random_cost fedscale_trace       --fedscale_client_profile_path "${FED_PROFILE}"       --num_users 1000 --concurrency 400 --buffer_size 100 --total_rounds 500       --model cnn --lr 0.01 --local_bs 50 --local_period 10 --interval 1       --system_metrics_log_dir "${SYSTEM_ROOT}/${algo}/seed=${seed}"
+    run_one "${TABLE}" "femnist_fedscale" "femnist" "${algo}" "${algo}" "${seed}"       --distribution noniid --alpha 0.5 --random_cost fedscale_trace       --fedscale_client_profile_path "${FED_PROFILE}"       --num_users 1000 --concurrency 400 --buffer_size 100 --total_rounds 500       --model cnn --lr 0.01 --local_bs 50 --local_period 10 --interval 1 --bn_buffer_policy endpoint_mean       --system_metrics_log_dir "${SYSTEM_ROOT}/${algo}/seed=${seed}"
   done
 done

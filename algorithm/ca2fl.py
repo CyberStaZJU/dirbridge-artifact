@@ -9,7 +9,10 @@ except ImportError:
 import random
 from models.local_update import LocalSGD
 from utils.aggregation import buffered_aggregation
-from utils.state_dict_ops import sd_sub, load_param_dict_, model_param_dict, sd_zero_like
+from utils.state_dict_ops import (
+    sd_sub, load_param_dict_, model_param_dict, sd_zero_like,
+    init_buffer_endpoints, capture_buffer_endpoint, apply_buffer_endpoints_,
+)
 
 
 def init_state(state, args, random_cost):
@@ -17,6 +20,7 @@ def init_state(state, args, random_cost):
     state['cache'] = [sd_zero_like(state["w_glob"]) for _ in range(args.num_users)]
     state['cost'] = [-1 for _ in range(args.num_users)]
     state['iterations'] = 0
+    init_buffer_endpoints(state, args.num_users)
     
     def local_train_delta(idx):
         net = copy.deepcopy(state['net_glob']).to(args.device)
@@ -30,6 +34,7 @@ def init_state(state, args, random_cost):
         )
         w_local = local.train(net=net)
         delta = sd_sub(w_local, w_start)
+        capture_buffer_endpoint(state, idx, net)
         del w_start, w_local, net
 
         return delta
@@ -83,6 +88,7 @@ def run_round(state, args, dataset_train, dict_users, num_samples, random_cost):
             state["w_glob"][key] += eta * server_v[key]
 
     load_param_dict_(state["net_glob"], state["w_glob"])
+    apply_buffer_endpoints_(state, buffer_list)
 
     for idx in buffer_list:
         state['cache'][idx] = state["delta"][idx]
@@ -107,6 +113,7 @@ def run_round(state, args, dataset_train, dict_users, num_samples, random_cost):
         w = local.train(net=net)
 
         state["delta"][idx] = sd_sub(w, w_start)
+        capture_buffer_endpoint(state, idx, net)
         cost[idx] = state["global_cost"] + random_cost(idx)
 
         del w_start, w, net

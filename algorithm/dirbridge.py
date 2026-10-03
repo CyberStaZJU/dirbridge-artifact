@@ -7,7 +7,13 @@ import numpy as np
 import torch
 
 from models.local_update import LocalSGD
-from utils.state_dict_ops import load_param_dict_, model_param_dict, sd_copy, sd_sub, sd_zero_like
+from utils.state_dict_ops import (
+    apply_buffer_endpoints_,
+    capture_buffer_endpoint,
+    init_buffer_endpoints,
+    load_param_dict_, model_param_dict, sd_copy, sd_sub, sd_zero_like,
+)
+
 
 
 def _getattr(args, name, default):
@@ -269,6 +275,7 @@ def local_train_delta(state, args, idx: int):
         nums=state['num_samples'][idx],
     )
     w_local = local.train(net=net)
+    capture_buffer_endpoint(state, idx, net)
     delta = sd_sub(w_local, w_start)
     del w_start, w_local, net
     return delta
@@ -582,6 +589,7 @@ def init_state(state, args, random_cost):
     state['delays'] = [0.0] * num_users
     state['global_cost'] = 0
     state['iterations'] = 0
+    init_buffer_endpoints(state, num_users)
 
     state['num_groups'] = max(1, int(_getattr(args, 'dirbridge_num_groups', 5)))
     state['group_ids'] = [-1] * num_users
@@ -703,7 +711,10 @@ def run_round(state, args, random_cost):
         for item in selected_items
         if item.get('kind') == 'group'
     ]
+    valid_buffer_list = list(state.get('last_valid_buffer_list', []))
     if not selected_items:
+        if valid_buffer_list:
+            apply_buffer_endpoints_(state, valid_buffer_list)
         state['iterations'] += 1
         sync_client_delays(state)
         _refresh_ema_cache_delays(state)
@@ -715,6 +726,8 @@ def run_round(state, args, random_cost):
         for key in aggregated_diff.keys():
             state['w_glob'][key] += aggregated_diff[key]
     load_param_dict_(state['net_glob'], state['w_glob'])
+    if valid_buffer_list:
+        apply_buffer_endpoints_(state, valid_buffer_list)
 
     _update_ema_group_cache(state, args, selected_items)
 

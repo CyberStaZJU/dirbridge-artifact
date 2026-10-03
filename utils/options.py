@@ -218,6 +218,12 @@ def _add_model_and_runtime_args(parser):
     group.add_argument('--num_classes', type=int, default=10, help='number of classes')
     group.add_argument('--num_channels', type=int, default=3, help='number of input channels')
     group.add_argument('--gpu', type=str, default='0', help='GPU ID, or -1 for CPU')
+    group.add_argument(
+        '--bn_buffer_policy',
+        choices=['endpoint_mean', 'legacy_delta'],
+        default='endpoint_mean',
+        help='BatchNorm buffer policy for FedBuff, CA2FL, FADAS and DirBridge; other algorithms retain legacy_delta',
+    )
     group.add_argument('--seed', type=int, default=123, help='random seed')
 
 

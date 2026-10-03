@@ -38,7 +38,7 @@ run_fedscale_setting() {
   local dataset="$1" model="$2" local_bs="$3" lr="$4" setting="$1_fedscale"
   for seed in ${SEEDS}; do
     for algo in ${ALGOS}; do
-      run_one "${TABLE}" "${setting}" "${dataset}" "${algo}" "${algo}" "${seed}"         --distribution noniid --alpha 0.5 --random_cost fedscale_trace         --fedscale_client_profile_path "${FED_PROFILE}"         --num_users 1000 --concurrency 400 --buffer_size 100 --total_rounds 500         --model "${model}" --lr "${lr}" --local_bs "${local_bs}" --local_period 10 --interval 1
+      run_one "${TABLE}" "${setting}" "${dataset}" "${algo}" "${algo}" "${seed}"         --distribution noniid --alpha 0.5 --random_cost fedscale_trace         --fedscale_client_profile_path "${FED_PROFILE}"         --num_users 1000 --concurrency 400 --buffer_size 100 --total_rounds 500         --model "${model}" --lr "${lr}" --local_bs "${local_bs}" --local_period 10 --interval 1 --bn_buffer_policy endpoint_mean
     done
   done
 }

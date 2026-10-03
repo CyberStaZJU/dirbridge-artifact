@@ -1,10 +1,12 @@
 import torch
+from typing import Mapping
 try:
     import torch_npu
 except ImportError:
     pass
 import math
 import torch.nn as nn
+from utils.numerical import NumericalError, require_finite_tensor, validate_model
 
 @torch.no_grad()
 def sd_average(dicts):
@@ -68,6 +70,77 @@ def load_param_dict_(model: nn.Module, param_dict):
         if name in cur:
             cur[name].copy_(v)
     model.load_state_dict(cur, strict=False)
+
+
+def validate_state_dict(state_dict, context='model state', check_running_var=True):
+    """Reject invalid state without changing tensors."""
+    for name, value in state_dict.items():
+        require_finite_tensor(name, value, context)
+        if check_running_var and name.endswith('running_var') and (value < 0).any().item():
+            raise NumericalError('negative running variance', context, key=name)
+
+
+def validate_model_state(model, context='model state'):
+    validate_model(model, context)
+
+
+def uses_buffer_endpoints(model):
+    return bool(getattr(model, '_asyncbuffer_trainable_state_only', False))
+
+
+def model_buffer_dict(model, device=None):
+    """Snapshot absolute persistent buffers, including BN batch counters."""
+    buffers = dict(model.named_buffers())
+    out = {
+        name: value.detach().clone().to(device=device or value.device)
+        for name, value in model.state_dict().items() if name in buffers
+    }
+    validate_state_dict(out, context='local buffer endpoint')
+    return out
+
+
+def init_buffer_endpoints(state, num_users):
+    if uses_buffer_endpoints(state['net_glob']):
+        state['buffer_endpoints'] = [None] * int(num_users)
+
+
+def capture_buffer_endpoint(state, idx, model):
+    if uses_buffer_endpoints(state['net_glob']):
+        state['buffer_endpoints'][idx] = model_buffer_dict(model)
+
+
+@torch.no_grad()
+def apply_buffer_endpoints_(state, selected_clients):
+    """Uniform endpoint mean; integer buffers use the selected maximum."""
+    model = state['net_glob']
+    if not uses_buffer_endpoints(model):
+        return
+    if not selected_clients:
+        raise ValueError('buffer endpoints require selected clients')
+    endpoints = [state['buffer_endpoints'][idx] for idx in selected_clients]
+    buffers = model_buffer_dict(model)
+    for endpoint in endpoints:
+        if endpoint is None or endpoint.keys() != buffers.keys():
+            raise ValueError('missing or mismatched buffer endpoint')
+        validate_state_dict(endpoint, context='selected buffer endpoint')
+        for name, value in endpoint.items():
+            if value.shape != buffers[name].shape or value.dtype != buffers[name].dtype:
+                raise ValueError(f'mismatched buffer endpoint {name}')
+    aggregated = {}
+    for name, buffer in buffers.items():
+        values = [endpoint[name].to(buffer.device) for endpoint in endpoints]
+        if buffer.is_floating_point() or buffer.is_complex():
+            mean = torch.zeros_like(buffer)
+            for value in values:
+                mean.add_(value / len(values))
+            aggregated[name] = mean
+        else:
+            maximum = values[0].clone()
+            for value in values[1:]:
+                maximum = torch.maximum(maximum, value)
+            aggregated[name] = maximum
+    validate_state_dict(aggregated, context='aggregated buffer endpoints')
+    load_param_dict_(model, aggregated)
 
 
 def sd_zero_like(sd):

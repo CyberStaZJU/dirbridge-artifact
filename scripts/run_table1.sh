@@ -37,7 +37,7 @@ run_image_setting() {
   local dataset="$1" alpha="$2" setting="$1_alpha$2"
   for seed in ${SEEDS}; do
     for algo in ${ALGOS}; do
-      run_one "${TABLE}" "${setting}" "${dataset}" "${algo}" "${algo}" "${seed}"         --distribution noniid --alpha "${alpha}" --random_cost mild_label_correlated_hierarchical         --num_users 100 --concurrency 40 --buffer_size 10 --total_rounds 500         --model resnet --lr 0.01 --local_bs 100 --local_period 10 --interval 1
+      run_one "${TABLE}" "${setting}" "${dataset}" "${algo}" "${algo}" "${seed}"         --distribution noniid --alpha "${alpha}" --random_cost mild_label_correlated_hierarchical         --num_users 100 --concurrency 40 --buffer_size 10 --total_rounds 500         --model resnet --lr 0.01 --local_bs 100 --local_period 10 --interval 1 --bn_buffer_policy endpoint_mean
     done
   done
 }

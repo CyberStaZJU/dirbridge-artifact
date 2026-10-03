@@ -7,7 +7,11 @@ except ImportError:
     pass
 import random
 from models.local_update import LocalSGD
-from utils.state_dict_ops import sd_sub, model_param_dict, load_param_dict_, sd_average, sd_zero_like
+from utils.state_dict_ops import (
+    sd_sub, model_param_dict, load_param_dict_, sd_average, sd_zero_like,
+    init_buffer_endpoints, capture_buffer_endpoint, apply_buffer_endpoints_,
+)
+from utils.numerical import require_finite_tensor, validate_model
 
 
 def init_state(state, args, random_cost):
@@ -15,6 +19,8 @@ def init_state(state, args, random_cost):
     state['stamp'] = [0] * int(args.num_users)
     state['cost'] = [-1] * int(args.num_users)
     state['iterations'] = 0
+    state['last_update_l2_norm'] = 0.0
+    init_buffer_endpoints(state, args.num_users)
 
     sampled_idx = random.sample(range(args.num_users), args.concurrency)
     for idx in sampled_idx:
@@ -29,6 +35,7 @@ def init_state(state, args, random_cost):
         )
         w_local = local.train(net=net)
         delta = sd_sub(w_local, w_start)
+        capture_buffer_endpoint(state, idx, net)
         del w_start, w_local, net
 
         state['delta'][idx] = delta
@@ -55,6 +62,9 @@ def run_round(state, args, random_cost):
     state['last_selected_item_summary'] = []
     state['last_regrouped'] = False
 
+    for client in buffer_list:
+        for key, value in state['delta'][client].items():
+            require_finite_tensor(key, value, 'selected_update', client=client, round=state['iterations'])
     selected_updates = [state['delta'][i] for i in buffer_list]
     aggregated_diff = sd_average(selected_updates)
 
@@ -62,6 +72,8 @@ def run_round(state, args, random_cost):
         for key in aggregated_diff.keys():
             state['w_glob'][key] += aggregated_diff[key]
     load_param_dict_(state['net_glob'], state['w_glob'])
+    apply_buffer_endpoints_(state, buffer_list)
+    validate_model(state['net_glob'], 'server_aggregate', round=state['iterations'])
     state['iterations'] += 1
 
     sampled_idx = [i for i in range(args.num_users) if i not in active_list]
@@ -80,6 +92,7 @@ def run_round(state, args, random_cost):
         )
         w_local = local.train(net=net)
         delta = sd_sub(w_local, w_start)
+        capture_buffer_endpoint(state, idx, net)
         del w_start, w_local, net
 
         state['delta'][idx] = delta
