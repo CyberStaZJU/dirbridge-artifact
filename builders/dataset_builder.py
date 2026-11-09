@@ -1,8 +1,11 @@
 # builders/dataset_builder.py
+import copy
 import json
 import os
 
 import numpy as np
+import torch
+from torch.utils.data import Subset
 
 from data_reader import femnist
 from data_reader.gspeech import FedScaleGSpeech
@@ -23,10 +26,40 @@ def _load_torchvision():
     return datasets, transforms
 
 
+def _remove_validation_from_clients(dict_users, validation_indices):
+    held_out = set(int(i) for i in validation_indices)
+    return {
+        int(client): np.asarray([int(i) for i in indices if int(i) not in held_out], dtype=np.int64)
+        for client, indices in dict_users.items()
+    }
+
+
+def _server_validation_subset(dataset_train, args, validation_transform=None):
+    fraction = float(getattr(args, 'validation_fraction', 0.0) or 0.0)
+    if fraction == 0.0:
+        return None, []
+    if not 0.0 < fraction < 1.0:
+        raise ValueError('validation_fraction must be between 0 and 1')
+    count = max(1, int(round(len(dataset_train) * fraction)))
+    seed = int(getattr(args, 'validation_seed', 20260922))
+    # 历史正式实验使用独立 NumPy RNG 不放回抽样，再排序原始训练索引。
+    rng = np.random.default_rng(seed)
+    indices = np.sort(rng.choice(len(dataset_train), size=count, replace=False)).tolist()
+    validation_dataset = copy.copy(dataset_train)
+    validation_dataset.transform = copy.deepcopy(
+        validation_transform if validation_transform is not None else getattr(dataset_train, 'transform', None)
+    )
+    if hasattr(dataset_train, 'data') and hasattr(dataset_train, 'targets'):
+        validation_dataset.data = dataset_train.data[indices]
+        validation_dataset.targets = [dataset_train.targets[i] for i in indices]
+        return validation_dataset, indices
+    return Subset(validation_dataset, indices), indices
+
+
 def _attach_dirichlet_direction_groups(dataset_train, dict_users, args):
     labels = extract_labels(dataset_train)
     classes = np.sort(np.unique(labels))
-    if getattr(args, 'random_cost', '') == 'dir-skew':
+    if getattr(args, 'random_cost', '') == 'dir-skew' or getattr(args, 'fedscale_profile_coupling', '') == 'label_group':
         num_groups = 3
     else:
         num_groups = int(getattr(args, 'label_block_groups', 5))
@@ -61,7 +94,7 @@ def _partition_vision_dataset(dataset_train, args):
         return generate_iid(dataset_train, args.num_users)
     if distribution == 'noniid':
         dict_users = generate_noniid(dataset_train, args.num_users, args.alpha)
-        if getattr(args, 'random_cost', '') == 'dir-skew':
+        if getattr(args, 'random_cost', '') == 'dir-skew' or getattr(args, 'fedscale_profile_coupling', '') == 'label_group':
             _attach_dirichlet_direction_groups(dataset_train, dict_users, args)
         return dict_users
     if distribution in {'label_block', 'label_blocks', 'block_label', 'label_disjoint'}:
@@ -185,8 +218,20 @@ def _build_cifar(args):
         transform=transforms.Compose([transforms.ToTensor(), normalize]),
     )
     dict_users = _partition_vision_dataset(dataset_train, args)
+    validation, validation_indices = _server_validation_subset(
+        dataset_train, args, validation_transform=dataset_test.transform
+    )
+    if validation_indices:
+        # 方向分组沿用原始 partition 元数据，不随 heldout 删除而重算。
+        dict_users = _remove_validation_from_clients(dict_users, validation_indices)
+        if any(len(indices) == 0 for indices in dict_users.values()):
+            raise ValueError('CIFAR validation leaves an empty training client')
     num_samples = np.array([len(dict_users[i]) for i in dict_users])
-    return dataset_train, dataset_test, dict_users, num_samples, {"img_size": dataset_train[0][0].shape}
+    return dataset_train, dataset_test, dict_users, num_samples, {
+        "img_size": dataset_train[0][0].shape,
+        "validation": validation,
+        "validation_indices": validation_indices,
+    }
 
 
 def _build_cifar100(args):
@@ -212,8 +257,20 @@ def _build_cifar100(args):
         transform=transforms.Compose([transforms.ToTensor(), normalize]),
     )
     dict_users = _partition_vision_dataset(dataset_train, args)
+    validation, validation_indices = _server_validation_subset(
+        dataset_train, args, validation_transform=dataset_test.transform
+    )
+    if validation_indices:
+        # 方向分组沿用原始 partition 元数据，不随 heldout 删除而重算。
+        dict_users = _remove_validation_from_clients(dict_users, validation_indices)
+        if any(len(indices) == 0 for indices in dict_users.values()):
+            raise ValueError('CIFAR validation leaves an empty training client')
     num_samples = np.array([len(dict_users[i]) for i in dict_users])
-    return dataset_train, dataset_test, dict_users, num_samples, {"img_size": dataset_train[0][0].shape}
+    return dataset_train, dataset_test, dict_users, num_samples, {
+        "img_size": dataset_train[0][0].shape,
+        "validation": validation,
+        "validation_indices": validation_indices,
+    }
 
 
 def _build_tinyimagenet(args):
@@ -274,7 +331,7 @@ def _build_femnist(args):
         selected_client_ids = list(dataset_train.client_ids)
     args.num_users = len(selected_client_ids)
     num_samples = np.array([len(dict_users[i]) for i in range(args.num_users)])
-    if getattr(args, 'random_cost', '') == 'dir-skew':
+    if getattr(args, 'random_cost', '') == 'dir-skew' or getattr(args, 'fedscale_profile_coupling', '') == 'label_group':
         _attach_dirichlet_direction_groups(dataset_train, dict_users, args)
     return dataset_train, dataset_test, dict_users, num_samples, {
         "img_size": dataset_train[0][0].shape,
@@ -301,6 +358,8 @@ def _build_gspeech(args):
     dict_users = dataset_train.get_dict_clients()
     args.num_users = len(selected_client_ids)
     num_samples = np.array([len(dict_users[i]) for i in range(args.num_users)])
+    if getattr(args, 'fedscale_profile_coupling', '') == 'label_group':
+        _attach_dirichlet_direction_groups(dataset_train, dict_users, args)
     return dataset_train, dataset_test, dict_users, num_samples, {
         "img_size": dataset_train[0][0].shape,
         "selected_client_ids": selected_client_ids,

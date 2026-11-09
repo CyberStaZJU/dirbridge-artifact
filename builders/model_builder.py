@@ -29,12 +29,10 @@ def build_model(args):
     policy = getattr(args, 'bn_buffer_policy', 'endpoint_mean')
     if policy not in ('endpoint_mean', 'legacy_delta'):
         raise ValueError(f'Unsupported BN buffer policy: {policy}')
-    supported = str(getattr(args, 'algo', '')).lower() in (
-        'fedbuff',
-        'ca2fl',
-        'fadas',
-        'dirbridge',
-    )
+    algorithm = str(getattr(args, 'algo', '')).lower()
+    supported = algorithm in ('fedbuff', 'ca2fl', 'fadas', 'dirbridge', 'casa')
+    if getattr(args, 'weak_extra_baseline_endpoints', False):
+        supported = supported or algorithm in ('fedbuffmalight', 'fedasmu')
     endpoint_mean = supported and policy == 'endpoint_mean'
     args.resolved_bn_buffer_policy = 'endpoint_mean' if endpoint_mean else 'legacy_delta'
     args.bn_buffer_policy_qualification = (

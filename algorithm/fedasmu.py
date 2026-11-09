@@ -12,7 +12,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from models.local_update import DatasetSplit, LocalFedASMU
-from utils.state_dict_ops import load_param_dict_, model_param_dict, sd_copy, sd_lerp
+from utils.numerical import validate_model
+from utils.state_dict_ops import (
+    load_param_dict_, model_param_dict, sd_copy, sd_lerp, model_buffer_dict,
+    uses_buffer_endpoints, init_buffer_endpoints, capture_buffer_endpoint,
+    apply_buffer_endpoints_, validate_state_dict,
+)
 
 
 # Repo-compatible buffered FedASMU:
@@ -127,6 +132,8 @@ def _pick_request_slot(state, args, idx):
 def _launch_client(idx, state, args, start_time):
     anchor_slot, action, request_slot = _pick_request_slot(state, args, idx)
     state['start_models'][idx] = sd_copy(state['w_glob'])
+    if uses_buffer_endpoints(state['net_glob']):
+        state['start_buffers'][idx] = model_buffer_dict(state['net_glob'])
     state['stamp'][idx] = state['iterations']
     state['cost'][idx] = start_time + state['random_cost'](idx)
     state['slot_anchor'][idx] = anchor_slot
@@ -167,6 +174,8 @@ def _update_server_controls(state, args, idx, reward):
 def _train_completed_client(idx, state, args, fresh_global, fresh_version):
     net = copy.deepcopy(state['net_glob']).to(args.device)
     load_param_dict_(net, state['start_models'][idx])
+    if uses_buffer_endpoints(state['net_glob']):
+        load_param_dict_(net, state['start_buffers'][idx])
 
     local = LocalFedASMU(
         args=args,
@@ -185,6 +194,9 @@ def _train_completed_client(idx, state, args, fresh_global, fresh_version):
         eta_nu=args.asmu_eta_nu,
     )
     w_local = local.train(net=net)
+    if uses_buffer_endpoints(state['net_glob']):
+        validate_state_dict(w_local, 'fedasmu_local_endpoint')
+    capture_buffer_endpoint(state, idx, net)
 
     state['gamma_ctrl'][idx] = float(local.gamma_ctrl)
     state['nu_ctrl'][idx] = float(local.nu_ctrl)
@@ -200,6 +212,9 @@ def init_state(state, args, random_cost):
     state['cost'] = [-1.0] * int(args.num_users)
     state['stamp'] = [0] * int(args.num_users)
     state['start_models'] = [None for _ in range(args.num_users)]
+    init_buffer_endpoints(state, args.num_users)
+    if uses_buffer_endpoints(state['net_glob']):
+        state['start_buffers'] = [None for _ in range(args.num_users)]
     state['iterations'] = 0
     state['global_cost'] = 0.0
 
@@ -227,6 +242,11 @@ def init_state(state, args, random_cost):
 
 def run_round(state, args, random_cost):
     del random_cost
+    state['last_buffer_list'] = []
+    state['last_valid_buffer_list'] = []
+    state['last_invalid_buffer_list'] = []
+    state['last_selected_item_summary'] = []
+    state['last_regrouped'] = False
 
     active_list = [idx for idx, cost in enumerate(state['cost']) if cost >= 0]
     if not active_list:
@@ -240,6 +260,7 @@ def run_round(state, args, random_cost):
     if not buffer_list:
         return state
 
+    state['last_buffer_list'] = list(buffer_list)
     current_version = int(state['iterations'])
     stale_limit = getattr(args, 'asmu_staleness_limit', None)
     if stale_limit is None:
@@ -249,6 +270,7 @@ def run_round(state, args, random_cost):
     shared_fresh_global = sd_copy(state['w_glob'])
     aggregated_global = sd_copy(state['w_glob'])
     round_idx = current_version + 1
+    accepted_clients = state['last_valid_buffer_list']
 
     for idx in buffer_list:
         state['cost'][idx] = -1.0
@@ -256,6 +278,7 @@ def run_round(state, args, random_cost):
     for idx in buffer_list:
         staleness = current_version - int(state['stamp'][idx]) + 1
         if staleness > int(stale_limit):
+            state['last_invalid_buffer_list'].append(idx)
             continue
 
         w_local = _train_completed_client(
@@ -291,9 +314,16 @@ def run_round(state, args, random_cost):
             mu_alpha=args.asmu_mu_alpha,
         )
         aggregated_global = sd_lerp(aggregated_global, w_local, alpha)
+        accepted_clients.append(idx)
 
+    if uses_buffer_endpoints(state['net_glob']):
+        validate_state_dict(aggregated_global, 'fedasmu_aggregate')
     state['w_glob'] = aggregated_global
     load_param_dict_(state['net_glob'], state['w_glob'])
+    if accepted_clients:
+        apply_buffer_endpoints_(state, accepted_clients)
+    if uses_buffer_endpoints(state['net_glob']):
+        validate_model(state['net_glob'], 'server_aggregate', round=current_version)
 
     state['iterations'] += 1
 

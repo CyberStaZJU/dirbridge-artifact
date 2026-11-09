@@ -9,6 +9,7 @@ import random
 import time
 import tracemalloc
 import resource
+import sys
 
 import matplotlib as mpl
 import numpy as np
@@ -67,7 +68,8 @@ def configure_runtime(args):
 
 
 def build_training_state(args):
-    dataset_train, dataset_test, dict_users, num_samples, _ = build_dataset(args)
+    init_start = time.perf_counter()
+    dataset_train, dataset_test, dict_users, num_samples, dataset_meta = build_dataset(args)
     net_glob, w_glob = build_model(args)
     state = {
         'net_glob': net_glob,
@@ -76,8 +78,16 @@ def build_training_state(args):
         'dict_users': dict_users,
         'num_samples': num_samples,
         'global_cost': 0,
+        'dataset_meta': dataset_meta,
+        'validation_dataset': dataset_meta.get('validation'),
+        'validation_indices': dataset_meta.get('validation_indices', []),
     }
-    return init_state(state, args), dataset_train, dataset_test, dict_users, num_samples
+    state = init_state(state, args)
+    state['e2_init_time_sec'] = time.perf_counter() - init_start
+    state['e2_init_cost_status'] = 'process_wall_time_includes_dataset_model_and_init'
+    if state.get('e2_init_mode') != 'online':
+        state['e2_online_bootstrap_time_sec'] = 0.0
+    return state, dataset_train, dataset_test, dict_users, num_samples
 
 
 def build_testacc_filename(args):
@@ -136,7 +146,8 @@ def _current_process_memory_mb():
         current_mb = current / (1024 ** 2)
         peak_mb = peak / (1024 ** 2)
     try:
-        rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        rss_mb = rss / (1024 ** 2 if sys.platform == 'darwin' else 1024.0)
         peak_mb = max(peak_mb, rss_mb)
     except Exception:
         pass
@@ -166,6 +177,40 @@ def _system_metrics_fieldnames():
         'total_recluster_time_sec',
         'max_recluster_time_sec',
         'recluster_count',
+        'e2_init_mode',
+        'e2_weight_source',
+        'e2_seen_clients',
+        'e2_seen_ratio',
+        'e2_clustered_clients',
+        'e2_assigned_clients',
+        'e2_raw_arrivals',
+        'e2_valid_updates',
+        'e2_used_updates',
+        'e2_group_version',
+        'e2_weight_update_round',
+        'e2_weight_l1_oracle',
+        'e2_weight_l1_status',
+        'e2_coverage_bound',
+        'e2_unseen_client_ratio',
+        'e2_uninitialized_group_mass',
+        'e2_cache_ready_ratio',
+        'evaluation_round',
+        'e2_eval_loss_finite',
+        'e2_eval_logits_finite',
+        'e2_eval_inputs_finite',
+        'e2_eval_predictions_valid',
+        'e2_eval_nonfinite_loss_batches',
+        'e2_eval_nonfinite_logit_batches',
+        'e2_init_time_sec',
+        'e2_online_bootstrap_time_sec',
+        'e2_oracle_measurement_time_sec',
+        'e2_init_cost_status',
+        'validation_round',
+        'validation_accuracy',
+        'validation_loss',
+        'validation_loss_finite',
+        'validation_logits_finite',
+        'validation_predictions_valid',
     ]
 
 
@@ -191,6 +236,12 @@ def log_system_metrics(args, state, csv_path, train_start_time, round_runtime_se
     if not csv_path:
         return
     process_mb, process_peak_mb = _current_process_memory_mb()
+    e2 = state.get('e2_metrics') or {}
+    current_round = int(state.get('iterations', 0))
+    evaluated = state.get('last_evaluation_round') == current_round
+    validated = state.get('last_validation_round') == current_round
+    eval_diag = (state.get('last_eval_diagnostics') or {}) if evaluated else {}
+    validation_diag = (state.get('last_validation_diagnostics') or {}) if validated else {}
     row = {
         'round': int(state.get('iterations', 0)),
         'algo': getattr(args, 'algo', ''),
@@ -213,25 +264,70 @@ def log_system_metrics(args, state, csv_path, train_start_time, round_runtime_se
         'total_recluster_time_sec': float(state.get('total_recluster_time_sec', 0.0)),
         'max_recluster_time_sec': float(state.get('max_recluster_time_sec', 0.0)),
         'recluster_count': int(state.get('recluster_count', 0)),
+        'e2_init_mode': state.get('e2_init_mode', ''),
+        'e2_weight_source': state.get('e2_last_weight_source', state.get('e2_weight_source', '')),
+        'e2_seen_clients': int(e2.get('seen_clients', 0)),
+        'e2_seen_ratio': e2.get('seen_ratio', ''),
+        'e2_clustered_clients': int(e2.get('clustered_clients', 0)),
+        'e2_assigned_clients': int(sum(1 for gid in state.get('group_ids', []) if int(gid) >= 0)),
+        'e2_raw_arrivals': int(sum(state.get('arrival_count', []))),
+        'e2_valid_updates': int(state.get('last_valid_buffer_count', 0)),
+        'e2_used_updates': int(sum(
+            int(item.get('member_count', 0))
+            for item in state.get('last_selected_item_summary', [])
+        )),
+        'e2_group_version': int(state.get('recluster_count', 0)),
+        'e2_weight_update_round': state.get('e2_weight_update_round', ''),
+        'e2_weight_l1_oracle': e2.get('weight_l1_oracle', ''),
+        'e2_weight_l1_status': e2.get('weight_l1_status', 'reference_unavailable'),
+        'e2_coverage_bound': e2.get('coverage_bound', ''),
+        'e2_unseen_client_ratio': (
+            1.0 - float(e2['seen_ratio']) if e2.get('seen_ratio', '') != '' else ''
+        ),
+        'e2_uninitialized_group_mass': e2.get('uninit_group_mass', ''),
+        'e2_cache_ready_ratio': state.get('e2_cache_ready_ratio', ''),
+        'evaluation_round': current_round if evaluated else '',
+        'e2_eval_loss_finite': eval_diag.get('eval_loss_finite', ''),
+        'e2_eval_logits_finite': eval_diag.get('eval_logits_finite', ''),
+        'e2_eval_inputs_finite': eval_diag.get('eval_inputs_finite', ''),
+        'e2_eval_predictions_valid': eval_diag.get('eval_predictions_valid', ''),
+        'e2_eval_nonfinite_loss_batches': eval_diag.get('eval_nonfinite_loss_batches', ''),
+        'e2_eval_nonfinite_logit_batches': eval_diag.get('eval_nonfinite_logit_batches', ''),
+        'e2_init_time_sec': state.get('e2_init_time_sec', ''),
+        'e2_online_bootstrap_time_sec': state.get('e2_online_bootstrap_time_sec', ''),
+        'e2_oracle_measurement_time_sec': state.get('e2_init_oracle_time_sec', ''),
+        'e2_init_cost_status': state.get('e2_init_cost_status', 'not_measured'),
+        'validation_round': current_round if validated else '',
+        'validation_accuracy': state.get('last_validation_accuracy', '') if validated else '',
+        'validation_loss': state.get('last_validation_loss', '') if validated else '',
+        'validation_loss_finite': validation_diag.get('eval_loss_finite', ''),
+        'validation_logits_finite': validation_diag.get('eval_logits_finite', ''),
+        'validation_predictions_valid': validation_diag.get('eval_predictions_valid', ''),
     }
     with open(csv_path, 'a', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=_system_metrics_fieldnames())
         writer.writerow(row)
 
 
-def evaluate_global_model(state, dataset_test, args):
+def evaluate_global_model(state, dataset_test, args, diagnostics_key='last_eval_diagnostics'):
     net_glob = state['net_glob']
+    was_training = net_glob.training
     net_glob.eval()
-
-    with torch.no_grad():
-        acc_test, loss_test = test_img(net_glob, dataset_test, args)
-
-    net_glob.train()
-    return acc_test, loss_test
+    try:
+        with torch.no_grad():
+            acc_test, loss_test, diagnostics = test_img(
+                net_glob, dataset_test, args, return_diagnostics=True
+            )
+    finally:
+        net_glob.train(was_training)
+    state[diagnostics_key] = diagnostics
+    if diagnostics_key == 'last_eval_diagnostics':
+        state['last_evaluation_round'] = state['iterations']
+    return acc_test, loss_test, diagnostics
 
 
 def log_evaluation(state, dataset_test, args, output_path):
-    acc_test, loss_test = evaluate_global_model(state, dataset_test, args)
+    acc_test, loss_test, diagnostics = evaluate_global_model(state, dataset_test, args)
     iterations = state['iterations']
 
     print('Round {:3d}, Test loss {:.3f}'.format(iterations, loss_test), flush=True)
@@ -240,6 +336,20 @@ def log_evaluation(state, dataset_test, args, output_path):
     with open(output_path, 'a') as handle:
         handle.write(str(acc_test))
         handle.write('\n')
+    return acc_test, loss_test, diagnostics
+
+
+def log_validation_evaluation(state, args):
+    dataset = state.get('validation_dataset')
+    if dataset is None:
+        return {'accuracy': '', 'loss': '', 'diagnostics': {}}
+    accuracy, loss, diagnostics = evaluate_global_model(
+        state, dataset, args, diagnostics_key='last_validation_diagnostics'
+    )
+    state['last_validation_accuracy'] = accuracy
+    state['last_validation_loss'] = loss
+    state['last_validation_round'] = state['iterations']
+    return {'accuracy': accuracy, 'loss': loss, 'diagnostics': diagnostics}
 
 
 def should_evaluate(state, args):
@@ -266,11 +376,12 @@ def run_training(
         state = run_one_round(args, state, dataset_train, dict_users, num_samples)
         round_runtime_sec = time.perf_counter() - round_start_time
         log_direction_skew_metrics(args, state, direction_skew_path)
-        log_system_metrics(args, state, system_metrics_path, train_start_time, round_runtime_sec)
-
         if should_evaluate(state, args):
             log_evaluation(state, dataset_test, args, output_path)
+            if state.get('validation_dataset') is not None:
+                log_validation_evaluation(state, args)
 
+        log_system_metrics(args, state, system_metrics_path, train_start_time, round_runtime_sec)
         gc.collect()
 
     return state

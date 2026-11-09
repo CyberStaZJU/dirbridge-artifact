@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "scope": "论文实验的参数网格与复现协议。",
+  "provenance": {"historical_source_commit": "30338cd1cae9d182a1d70c7ca28c2c253000f7fd"},
+  "dir_skew_alias": {
+    "historical": "mild_label_correlated_hierarchical",
+    "target": "dir-skew",
+    "equivalence": "相同三标签块、速度范围和调度；速度映射 RNG seed+104729，服务时间 RNG seed+1。"
+  },
+  "validation_protocol": {"sampling": "numpy_choice", "fraction": 0.1, "seed": 20260922, "order": "先客户端划分，再移除留出索引；验证集使用 test transform"},
+  "common": {
+    "distribution": "noniid", "alpha": 0.5, "random_cost": "dir-skew",
+    "num_users": 100, "concurrency": 40, "buffer_size": 10, "total_rounds": 500,
+    "model": "resnet", "local_bs": 100, "local_period": 10, "interval": 1,
+    "lr": 0.01, "global_lr": 1.0, "weight_decay": 0.0, "bn_buffer_policy": "legacy_delta"
+  },
+  "suites": {
+    "tuning-ca2fl": {
+      "default_seeds": [100], "expected_runs": 12,
+      "evidence": ["supplemental-track.tex:966-987"],
+      "fixed": {"dataset": "cifar", "num_classes": 10, "algo": "CA2FL", "total_rounds": 150, "validation_fraction": 0.1, "validation_seed": 20260922, "bn_buffer_policy": "endpoint_mean"},
+      "grid": {"lr": [0.003, 0.01, 0.03, 0.05], "global_lr": [0.1, 0.5, 1.0]}
+    },
+    "tuning-fadas": {
+      "default_seeds": [100], "expected_runs": 32,
+      "evidence": ["supplemental-track.tex:969-1016"],
+      "fixed": {"dataset": "cifar", "num_classes": 10, "algo": "FADAS", "total_rounds": 150, "validation_fraction": 0.1, "validation_seed": 20260922, "bn_buffer_policy": "endpoint_mean", "weight_decay": 0.0001, "fadas_beta1": 0.9, "fadas_beta2": 0.99, "fadas_eps": 1e-8, "fadas_tau_c": 4.0},
+      "grid": {"lr": [0.003, 0.01, 0.03, 0.1], "global_lr": [0.0001, 0.0003, 0.001, 0.003], "fadas_delay_adaptive": [false, true]}
+    },
+    "tuned-validation": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 80,
+      "evidence": ["supplemental-track.tex:1014-1036"],
+      "fixed": {"lr": 0.03, "validation_fraction": 0.1, "validation_seed": 20260922, "bn_buffer_policy": "endpoint_mean"},
+      "variants": [{"dataset": "cifar", "num_classes": 10}, {"dataset": "cifar100", "num_classes": 100}],
+      "grid": {"alpha": [0.1, 0.5], "algo": ["FedBuff", "DirBridge", "CA2FL", "FADAS"]},
+      "algorithm_overrides": {
+        "CA2FL": {"global_lr": 0.5},
+        "FADAS": {"global_lr": 0.0001, "weight_decay": 0.0001, "fadas_delay_adaptive": true, "fadas_beta1": 0.9, "fadas_beta2": 0.99, "fadas_eps": 1e-8, "fadas_tau_c": 4.0}
+      },
+      "notes": ["FedBuff/DirBridge 历史配置 global_lr=0.5，实际倍率为 1.0；此处显式使用有效倍率 1.0。", "报告 heldout validation accuracy。"]
+    },
+    "online-init": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 15,
+      "evidence": ["supplemental-track.tex:1111-1149"],
+      "fixed": {"dataset": "cifar100", "num_classes": 100, "algo": "DirBridge", "dirbridge_num_groups": 7, "dirbridge_sketch_dim": 2048},
+      "variants": [{"e2_weight_source": "full_count", "e2_init_mode": "full"}, {"e2_weight_source": "arrival_freq", "e2_init_mode": "online"}, {"e2_weight_source": "unique_client", "e2_init_mode": "online"}],
+      "notes": ["历史 BN 协议：legacy_delta。"]
+    },
+    "profile-coupling": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 70,
+      "evidence": ["main-track.tex:835-854", "supplemental-track.tex:1202-1219"],
+      "fixed": {"random_cost": "fedscale_trace", "fedscale_profile_coupling": "label_group", "num_users": 1000, "concurrency": 400, "buffer_size": 100, "num_channels": 1},
+      "variants": [{"dataset": "femnist", "model": "cnn", "num_classes": 62, "lr": 0.01, "local_bs": 50}, {"dataset": "gspeech", "model": "melcnn", "num_classes": 35, "lr": 0.2, "local_bs": 6}],
+      "grid": {"algo": ["DirBridge", "CA2FL", "FADAS", "FedBuff", "CASA", "FedBuffMALight", "FedASMU"]},
+      "algorithm_overrides": {"FADAS": {"global_lr": 0.0001, "fadas_delay_adaptive": false, "weight_decay": 0.0}, "DirBridge": {"dirbridge_sketch_dim": 2048}},
+      "notes": ["真实 FedScale device profile 与受控 label-group coupling；历史 BN 协议为 legacy_delta。", "FADAS 使用 generic server lr=0.0001、adaptation off、weight decay=0。"]
+    },
+    "group-sketch": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 40,
+      "evidence": ["supplemental-track.tex:1038-1084"],
+      "fixed": {"dataset": "cifar100", "num_classes": 100, "algo": "DirBridge"},
+      "variants": [{"dirbridge_num_groups": 1, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 2, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 4, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 7, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 12, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 16, "dirbridge_sketch_dim": 2048}, {"dirbridge_num_groups": 7, "dirbridge_sketch_dim": 512}, {"dirbridge_num_groups": 7, "dirbridge_sketch_dim": 8192}],
+      "notes": ["8 个唯一配置，共享 K=7、d=2048 默认点；历史 BN 协议为 legacy_delta。"]
+    },
+    "beta-retention": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 45,
+      "evidence": ["plot_fig_sensitivity_recluster.py:17-36", "scripts/run_table6.sh"],
+      "protocol_origin": "reconstructed",
+      "fixed": {"algo": "DirBridge", "dirbridge_recluster_interval": 5, "dirbridge_sketch_dim": 2048, "bn_buffer_policy": "endpoint_mean"},
+      "variants": [{"dataset": "cifar", "num_classes": 10}, {"dataset": "cifar100", "num_classes": 100}, {"dataset": "tinyimagenet", "num_classes": 200}],
+      "grid": {"dirbridge_cache_beta": [0.5, 0.7, 0.9]},
+      "notes": ["按绘图 grid 重建，BN 使用 endpoint_mean。", "与 recluster-period 共享 15 个默认运行；两 suite 合计 90，去重 75。"]
+    },
+    "recluster-period": {
+      "default_seeds": [1, 2, 3, 4, 5], "expected_runs": 45,
+      "evidence": ["plot_fig_sensitivity_recluster.py:17-36", "scripts/run_table6.sh"],
+      "protocol_origin": "reconstructed",
+      "fixed": {"algo": "DirBridge", "dirbridge_cache_beta": 0.9, "dirbridge_sketch_dim": 2048, "bn_buffer_policy": "endpoint_mean"},
+      "variants": [{"dataset": "cifar", "num_classes": 10}, {"dataset": "cifar100", "num_classes": 100}, {"dataset": "tinyimagenet", "num_classes": 200}],
+      "grid": {"dirbridge_recluster_interval": [5, 10, 20]},
+      "notes": ["按绘图 grid 重建，BN 使用 endpoint_mean。", "与 beta-retention 共享 15 个默认运行；两 suite 合计 90，去重 75。"]
+    }
+  },
+  "separate_protocols": {
+    "weak-admission": {"entry_point": "scripts/run_weak_experiments.py", "summary": "scripts/summarize_weak.py", "expected_runs": 70, "evidence": "supplemental-track.tex:1221-1252"}
+  }
+}

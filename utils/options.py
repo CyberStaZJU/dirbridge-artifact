@@ -222,8 +222,9 @@ def _add_model_and_runtime_args(parser):
         '--bn_buffer_policy',
         choices=['endpoint_mean', 'legacy_delta'],
         default='endpoint_mean',
-        help='BatchNorm buffer policy for FedBuff, CA2FL, FADAS and DirBridge; other algorithms retain legacy_delta',
+        help='BatchNorm buffer policy; FedBuffMALight and FedASMU endpoints require --weak_extra_baseline_endpoints',
     )
+    group.add_argument('--weak_extra_baseline_endpoints', action='store_true', help='显式启用 FedBuffMALight 与 FedASMU 的 Weak 补跑 BN endpoint')
     group.add_argument('--seed', type=int, default=123, help='random seed')
 
 
@@ -250,6 +251,7 @@ def _add_data_args(parser):
     )
     group.add_argument('--delay_gamma', type=float, default=1.0, help='delay-profile compatibility parameter')
     group.add_argument('--delay_seed', type=int, default=None, help='optional seed for fixed client delay groups')
+    group.add_argument('--fedscale_profile_coupling', default='', choices=['', 'label_group'], help='imposed three-label-block to FedScale device-class association')
     group.add_argument('--fedscale_client_profile_path', type=str, default='', help='FedScale client profile path')
     group.add_argument('--fedscale_availability_trace_path', type=str, default='', help='optional FedScale availability trace path')
     group.add_argument('--fedscale_time_scale', type=float, default=1.0, help='FedScale time multiplier')
@@ -270,6 +272,8 @@ def _add_optimization_args(parser):
     group.add_argument('--lr', type=float, default=0.01, help='local learning rate')
     group.add_argument('--global_lr', type=float, default=None, help='server/global learning rate')
     group.add_argument('--weight_decay', type=float, default=0.0, help='weight decay used by local SGD')
+    group.add_argument('--validation_fraction', type=float, default=0.0, help='CIFAR training fraction held out for server validation')
+    group.add_argument('--validation_seed', type=int, default=20260922, help='deterministic validation split seed')
 
 
 def _add_grouping_args(parser):
@@ -277,6 +281,8 @@ def _add_grouping_args(parser):
     group.add_argument('--dirbridge_num_groups', type=int, default=5, help='number of DirBridge direction groups')
     group.add_argument('--dirbridge_feature_mode', type=str, default='count_sketch', choices=['count_sketch'], help='DirBridge grouping feature')
     group.add_argument('--dirbridge_sketch_dim', type=int, default=2048, help='DirBridge Count Sketch dimension')
+    group.add_argument('--e2_init_mode', default='full', choices=['full', 'online'], help='full-client or arrival-only initialization')
+    group.add_argument('--e2_weight_source', default='full_count', choices=['full_count', 'arrival_freq', 'unique_client'], help='population group-share estimator; online mode requires arrival_freq or unique_client')
     group.add_argument('--dirbridge_count_sketch_seed', type=int, default=None, help='DirBridge Count Sketch seed')
     group.add_argument('--dirbridge_kmeans_iters', type=int, default=20, help='spherical k-means iterations')
     group.add_argument('--dirbridge_recluster_interval', type=int, default=None, help='DirBridge reclustering interval')
@@ -361,4 +367,15 @@ def args_parser():
 
     argv = sys.argv[1:]
     args = parser.parse_args(argv)
-    return _apply_algo_defaults(args, argv)
+    args = _apply_algo_defaults(args, argv)
+    if args.weak_extra_baseline_endpoints and args.algo not in ('FedBuffMALight', 'FedASMU'):
+        parser.error('weak_extra_baseline_endpoints requires FedBuffMALight or FedASMU')
+    if args.e2_init_mode == 'online' and (args.algo != 'DirBridge' or args.e2_weight_source == 'full_count'):
+        parser.error('online initialization requires DirBridge and arrival_freq or unique_client weights')
+    if args.fedscale_profile_coupling and args.random_cost != 'fedscale_trace':
+        parser.error('profile coupling requires --random_cost fedscale_trace')
+    if args.validation_fraction and (args.dataset not in {'cifar', 'cifar100'} or not 0 < args.validation_fraction < 1):
+        parser.error('validation_fraction must be in (0, 1) and is supported only for CIFAR-10/100')
+    if not 1 <= args.buffer_size <= args.concurrency <= args.num_users:
+        parser.error('require 1 <= buffer_size <= concurrency <= num_users')
+    return args

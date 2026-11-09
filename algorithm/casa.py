@@ -11,6 +11,9 @@ except ImportError:
 
 from models.local_update import LocalSGD
 from utils.state_dict_ops import (
+    apply_buffer_endpoints_,
+    capture_buffer_endpoint,
+    init_buffer_endpoints,
     load_param_dict_,
     model_param_dict,
     sd_axpy,
@@ -143,6 +146,7 @@ def _local_train_delta(state, args, idx):
     )
     w_local = local.train(net=net)
     delta = sd_sub(w_local, w_start)
+    capture_buffer_endpoint(state, idx, net)
     del w_start, w_local, net
     return delta
 
@@ -413,6 +417,7 @@ def _maybe_recluster(state, args, force=False):
 
 def init_state(state, args, random_cost):
     num_users = int(args.num_users)
+    init_buffer_endpoints(state, num_users)
 
     state['delta'] = [sd_zero_like(state['w_glob']) for _ in range(num_users)]
     state['stamp'] = [0] * num_users
@@ -509,6 +514,7 @@ def run_round(state, args, random_cost):
         for key in aggregated_diff.keys():
             state['w_glob'][key].add_(aggregated_diff[key], alpha=step_size)
     load_param_dict_(state['net_glob'], state['w_glob'])
+    apply_buffer_endpoints_(state, buffer_list)
 
     state['iterations'] += 1
     _maybe_recluster(state, args, force=False)

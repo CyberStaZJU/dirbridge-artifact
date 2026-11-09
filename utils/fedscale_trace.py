@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from utils.fedscale_profile_coupling import build_profile_coupling
+
 
 PROFILE_CONTAINER_KEYS = (
     'client_profiles',
@@ -486,6 +488,23 @@ class FedScaleTraceSampler:
             sample_mode=str(getattr(args, 'fedscale_profile_sample', 'random')),
             seed=int(seed),
         )
+        self.profile_coupling = None
+        if getattr(args, 'fedscale_profile_coupling', '') == 'label_group':
+            groups = getattr(args, 'label_correlated_group_ids', None)
+            if groups is None or len(groups) != len(self.client_ids):
+                raise ValueError('label_group profile coupling requires one label group per client')
+            self.profile_coupling = build_profile_coupling(
+                profile_path,
+                groups,
+                int(getattr(args, 'fedscale_batch_size', 0) or getattr(args, 'local_bs', 1)),
+                int(getattr(args, 'fedscale_local_steps', 0) or getattr(args, 'local_period', 1)),
+                getattr(args, 'fedscale_upload_size_mb', 1.0),
+                getattr(args, 'fedscale_download_size_mb', None),
+                int(seed),
+                3,
+                augmentation_factor=getattr(args, 'fedscale_augmentation_factor', 3.0),
+            )
+            self.client_ids = [row['profile_id'] for row in self.profile_coupling['mapping']]
         self.availability_client_ids = self._map_availability_clients(len(self.client_ids))
 
         self.base_durations = {
@@ -615,7 +634,7 @@ class FedScaleTraceSampler:
         )
 
     def metadata(self):
-        return {
+        metadata = {
             'fedscale_trace_num_profiles': len(self.profile_records),
             'fedscale_trace_num_availability_clients': len(self.availability),
             'fedscale_trace_client_ids': list(self.client_ids),
@@ -623,6 +642,9 @@ class FedScaleTraceSampler:
             'fedscale_trace_wrap': self.trace_wrap,
             'fedscale_trace_time_scale': self.time_scale,
         }
+        if self.profile_coupling is not None:
+            metadata['fedscale_profile_coupling'] = self.profile_coupling
+        return metadata
 
 
 def ensure_fedscale_trace_sampler(args, state=None):

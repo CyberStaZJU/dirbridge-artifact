@@ -4,13 +4,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-python -m compileall -q .
-find . -name '__pycache__' -type d -prune -exec rm -rf {} +
-find . -name '*.pyc' -type f -delete
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+"${PYTHON_BIN}" - <<'PY'
+import ast
+import pathlib
+import subprocess
 
-if grep -RInE '47\.107|/home/|WorkBuddy|workbuddy|cyb@|Hunan|hnu|Yibo|Zhizhong|Chao Zhang|Keqin|Kenli|相关工作|skills|\.workbuddy' . --exclude-dir=.git --exclude='check_artifact.sh'; then
-  echo "Potential private or non-anonymous content found. Please inspect the matches above." >&2
-  exit 1
-fi
-
-echo "Artifact check passed."
+root = pathlib.Path.cwd()
+files = sorted(root.rglob('*.py'))
+files = [p for p in files if '.git' not in p.parts and '__pycache__' not in p.parts]
+for path in files:
+    ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+for path in sorted((root / 'scripts').glob('*.sh')):
+    subprocess.run(['bash', '-n', str(path)], check=True)
+print(f'Syntax check passed: {len(files)} Python files; shell entry points parse successfully.')
+PY

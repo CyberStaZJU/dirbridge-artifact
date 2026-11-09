@@ -8,7 +8,12 @@ except ImportError:
 import random
 
 from models.local_update import LocalSGD
-from utils.state_dict_ops import load_param_dict_, sd_sub, sd_axpy, sd_copy, sd_zero_like, model_param_dict, sd_average
+from utils.numerical import validate_model
+from utils.state_dict_ops import (
+    load_param_dict_, sd_sub, sd_axpy, sd_copy, sd_zero_like, model_param_dict, sd_average,
+    init_buffer_endpoints, capture_buffer_endpoint, apply_buffer_endpoints_,
+    uses_buffer_endpoints, validate_state_dict,
+)
 
 class MomentumApproximation(object):
     """
@@ -86,6 +91,7 @@ def init_state(state, args, random_cost):
     state['stamp'] = [0] * int(args.num_users)
     state['cost'] = [-1] * int(args.num_users)
     state['iterations'] = 0
+    init_buffer_endpoints(state, args.num_users)
     ma_beta = float(getattr(args, 'momentum', 0.9))
     ma_p = float(getattr(args, 'ma_p', getattr(args, 'staleness_power', 0.0)))
     state['ma_solver'] = MomentumApproximation(
@@ -107,6 +113,7 @@ def init_state(state, args, random_cost):
         )
         w_local = local.train(net=net)
         delta = sd_sub(w_local, w_start)
+        capture_buffer_endpoint(state, idx, net)
         del w_start, w_local, net
 
         return delta
@@ -168,6 +175,7 @@ def run_round(state, args, random_cost):
             )
             w_local = local.train(net=net)
             delta = sd_sub(w_local, w_start)
+            capture_buffer_endpoint(state, idx, net)
             del w_start, w_local, net
 
             state['delta'][idx] = delta
@@ -178,6 +186,8 @@ def run_round(state, args, random_cost):
     r_t = sd_zero_like(state['w_glob'])
     normalizer = float(args.buffer_size)
     for idx, scale in zip(buffer_list, scale_list):
+        if uses_buffer_endpoints(state['net_glob']):
+            validate_state_dict(state['delta'][idx], 'selected_update', check_running_var=False)
         sd_axpy(r_t, scale / normalizer, state['delta'][idx])
 
     ma_solver = state['ma_solver']
@@ -193,11 +203,16 @@ def run_round(state, args, random_cost):
         simulated_momentum, _ = ma_solver.solve_light(state['iterations'], r_t)
     else:
         simulated_momentum, _ = ma_solver.solve_full(state['iterations'])
+    if uses_buffer_endpoints(state['net_glob']):
+        validate_state_dict(simulated_momentum, 'ma_momentum', check_running_var=False)
     with torch.no_grad():
         for key in simulated_momentum.keys():
             state['w_glob'][key] += simulated_momentum[key]
 
     load_param_dict_(state['net_glob'], state['w_glob'])
+    apply_buffer_endpoints_(state, buffer_list)
+    if uses_buffer_endpoints(state['net_glob']):
+        validate_model(state['net_glob'], 'server_aggregate', round=state['iterations'])
 
     sampled_idx = [i for i in range(args.num_users) if i not in active_list]
     np.random.shuffle(sampled_idx)
@@ -215,6 +230,7 @@ def run_round(state, args, random_cost):
         )
         w_local = local.train(net=net)
         delta = sd_sub(w_local, w_start)
+        capture_buffer_endpoint(state, idx, net)
         del w_start, w_local, net
 
         return delta

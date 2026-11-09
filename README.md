@@ -33,10 +33,9 @@ dirbridge-artifact/
 
 ## 2. Environment
 
-The desktop reference environment is `/home/jczn2/.conda/envs/yibo`. Install dependencies with:
+The captured CUDA reference environment is recorded in `requirements.txt` and `environment.yml`. Create an environment from these files, then install the dependencies:
 
 ```bash
-conda activate yibo
 pip install -r requirements.txt
 ```
 
@@ -138,7 +137,7 @@ python scripts/export_client_selection.py \
   --dataset gspeech \
   --data-root data/gspeech \
   --num-clients 1000 \
-  --min-samples-per-client 0 \
+  --min-samples-per-client 30 \
   --fedscale-profile fedscale_device_info/client_device_capacity \
   --seed 1 \
   --out-dir data/client_selection
@@ -206,79 +205,95 @@ bash scripts/run_fedscale_femnist.sh
 bash scripts/run_fedscale_gspeech.sh
 ```
 
-## 6. Diagnostics and Additional Analyses
+## 6. Experiment Entry Points
 
-The `ds/` directory contains scripts for:
+### Main experiments
 
-- tail-10 accuracy summarization
-- DirBridge ablation summarization
-- sensitivity analysis summarization
-- significance comparison
-
-Example:
-
-```bash
-python ds/summarize_tail10.py --help
-python ds/compare_dirbridge_significance.py --help
-```
-
-## 7. Mapping to Paper Results
-
-| Paper result type | Artifact component |
-|---|---|
-| Main Dir-Skew accuracy tables | `scripts/run_dirskew_main.sh`, `ds/summarize_tail10.py` |
-| FedScale FEMNIST/GSpeech tables | `scripts/build_femnist_pt.py`, `scripts/export_client_selection.py`, `scripts/run_fedscale_femnist.sh`, `scripts/run_fedscale_gspeech.sh` |
-| Direction-skew diagnostic curves | training logs, processed metrics, and direction-skew summarization utilities in `ds/` |
-| Ablation study | `ds/summarize_dirbridge_ablation.py` |
-| Sensitivity study | `ds/summarize_dirbridge_sensitivity.py` |
-| Significance checks | `ds/compare_dirbridge_significance.py` |
-| Reproducibility configuration | `configs/`, shell scripts in `scripts/`, and dataset/client-selection exports |
-
-### One-command table reproduction scripts
-
-The following scripts provide one-command entry points for the main paper tables. They set the required environment variables and write logs/results under `artifacts/` by default. Override `PYTHON_BIN`, `CUDA_VISIBLE_DEVICES`, `SEEDS`, `OUT_ROOT`, `ALGOS`, or `FED_PROFILE` if needed.
-
-| Paper table | Script | Purpose / setting |
+| Experiment | Entry point | Setting |
 |---|---|---|
-| Table 1 | `scripts/run_table1.sh` | Main 100-client image-dataset results under Dir-Skew latency, `(M_c,B)=(40,10)`, five seeds. Covers CIFAR-10, CIFAR-100, and TinyImageNet. |
-| Table 2 | `scripts/run_table2.sh` | Large-client natural-data results under FedScale trace, `(M_c,B)=(400,100)`, five seeds. Covers FEMNIST and GSpeech. |
-| Table 3 | `scripts/run_table3.sh` | Quantitative raw-buffer direction-skew `Phi_t` summary inputs; logs per-round direction-skew CSVs for CIFAR-10 Dir-Skew and FEMNIST FedScale. |
-| Table 4 | `scripts/run_table4.sh` | CIFAR-10 simulated-time convergence and server-side overhead under Dir-Skew, alpha=0.5, `(M_c,B)=(40,10)`. |
-| Table 5 | `scripts/run_table5.sh` | FEMNIST simulated-time convergence and server-side overhead under FedScale trace, `(M_c,B)=(400,100)`. |
-| Table 6 | `scripts/run_table6.sh` | DirBridge component ablation under Dir-Skew at alpha=0.5. Runs full, no EMA cache, random grouping, and no staleness filter variants. |
-
-Example:
+| Main image results | `scripts/run_table1.sh` | CIFAR-10/100 at alpha 0.1/0.5; TinyImageNet at alpha 0.5; seven methods, five seeds |
+| Natural FedScale | `scripts/run_table2.sh` | FEMNIST and GSpeech; 1,000 clients, concurrency 400, buffer 100 |
+| Raw-buffer skew | `scripts/run_table3.sh` | CIFAR-10 Dir-Skew and FEMNIST FedScale |
+| Systems and simulated time | `scripts/run_table4.sh`, `scripts/run_table5.sh` | CIFAR-10 T50 and FEMNIST T80; per-round runtime and reclustering time |
+| Component ablation | `scripts/run_table6.sh` | Full, no EMA cache, random grouping, no staleness filter |
 
 ```bash
 bash scripts/run_table1.sh
-bash scripts/run_table2.sh
-```
-
-For faster smoke checks, restrict seeds and algorithms:
-
-```bash
 SEEDS="1" ALGOS="DirBridge FedBuff" bash scripts/run_table1.sh
 ```
 
-## 8. Expected Outputs
+`PYTHON_BIN`, `SEEDS`, `ALGOS`, `OUT_ROOT`, and `FED_PROFILE` can be overridden. The default runtime directory is `${HOME}/.local/state/dirbridge`; set `DIRBRIDGE_STATE_ROOT` to use another location. Dataset paths are relative to this runtime directory. Keep datasets and generated outputs outside the source tree.
 
-By default, scripts write logs, metrics, and accuracy traces under:
+### Supplementary experiments
 
-```text
-artifacts/processed_metrics/
+`scripts/run_revision_experiments.py` prints the resolved commands by default. Add `--execute` to run a suite. Each execution creates a separate batch directory with per-run manifests and logs.
+
+| Suite | Protocol | Runs |
+|---|---|---:|
+| `tuning-ca2fl` | CIFAR-10 heldout search: 4 local rates x 3 server rates | 12 |
+| `tuning-fadas` | 4 local rates x 4 server rates x delay adaptation on/off | 32 |
+| `tuned-validation` | Two datasets x two alpha values x four methods x five seeds | 80 |
+| `online-init` | Full/count, online/arrival-frequency, online/unique-client | 15 |
+| `profile-coupling` | FEMNIST/GSpeech with controlled label-to-device-class coupling | 70 |
+| `group-sketch` | K0 in {1,2,4,7,12,16}; d in {512,2048,8192}; shared default counted once | 40 |
+| `beta-retention` | EMA retention on the three image datasets | 45 |
+| `recluster-period` | Reclustering period on the three image datasets | 45 |
+
+```bash
+python scripts/run_revision_experiments.py --suite tuned-validation
+python scripts/run_revision_experiments.py --suite tuned-validation --execute
+python scripts/run_revision_experiments.py --suite profile-coupling \
+  --fedscale-profile /absolute/path/to/client_device_capacity --execute
 ```
 
-Generated summary tables can be placed under:
+The beta/R suites reconstruct the figure grids with the current endpoint policy. The default beta/R point appears in both sweeps. Protocol values are in `configs/revision_experiments.json`.
 
-```text
-artifacts/paper_tables/
+Weak uses a fixed offline direction reference, client-indexed service trajectories, and the seven methods on CIFAR-10 at alpha 0.1/0.5. Its FIFO diagnostic selects from the same pre-update queue state.
+
+```bash
+python scripts/run_weak_experiments.py
+python scripts/run_weak_experiments.py --execute --output-root /absolute/runtime/root --gpu 0
+python scripts/summarize_weak.py --root /absolute/runtime/root/weak-UUID
 ```
 
-## 9. Notes on Runtime and Reproducibility
+The analytical server-state budget is available independently of training:
 
-Full five-seed reproduction across all datasets and baselines is compute-intensive. The quick smoke test is intended only to check that the code path works; it is not expected to reproduce paper-level accuracy.
+```bash
+python scripts/server_state_budget.py
+```
 
-For paper-level reproduction, use the shell scripts in `scripts/` as the primary entry points and keep the default seeds and delay seeds unless intentionally running additional trials. When reporting regenerated results, record the commit hash, GPU type, PyTorch/CUDA versions, and any dataset path changes.
+## 7. Results and Metrics
+
+`ds/summarize_paper_runs.py` reads table-script outputs and revision manifests, checks the requested rounds and seed coverage, and reports tail-10 accuracy with sample standard deviation across seeds. It also summarizes simulated threshold time, relative per-round runtime, reclustering events, and raw-buffer skew when the corresponding logs are available.
+
+```bash
+python ds/summarize_paper_runs.py --root /absolute/runtime/root --include-direction-skew
+python ds/summarize_paper_runs.py --root /absolute/runtime/root/revision/tuned-validation \
+  --channel validation
+python ds/summarize_paper_runs.py --root /absolute/runtime/root/revision/tuning-ca2fl \
+  --expected-seeds 1 --channel validation
+```
+
+Use the shared `OUT_ROOT` as the table-summary root so the default accuracy and metric subdirectories can be joined. Each revision run's manifest supplies its metric paths and round count.
+
+The existing `summarize_tail10.py`, ablation/sensitivity utilities, and significance script remain available for their original directory layouts.
+
+## 8. Protocol Notes
+
+- Heldout validation uses 5,000 CIFAR training examples selected without replacement by NumPy `default_rng(20260922)`, sorted before constructing the split. These examples are removed from client training partitions; test and validation metrics are recorded separately.
+- FedBuff/DirBridge use effective server rate 1.0 in the tuned-validation suite; the historical configuration listed 0.5 while the implementation applied the full update. FADAS uses weight decay 1e-4 in this suite.
+- Online initialization, profile coupling, and K0/d configurations retain their recorded `legacy_delta` BN policy. Some historical evaluations under this policy had nonfinite losses; evaluation logs expose loss, logits, inputs, and prediction validity. Endpoint-based suites use `endpoint_mean`.
+- The raw-buffer monitor uses fixed label-histogram groups; Weak uses its fixed model-update direction reference. These are separate measurements.
+- `round_runtime_sec` measures local-training computation and server processing, excluding evaluation, logging, and garbage collection. Simulated time and reclustering time are recorded separately. The analytical state budget counts tensor slots, whereas runtime memory fields measure process/device usage.
+
+## 9. Verification
+
+```bash
+bash scripts/check_artifact.sh
+python -m pytest tests -q
+```
+
+The first command checks Python and shell syntax; the tests exercise aggregation, BN endpoints, online initialization, validation splits, profile assignment, experiment definitions, and result handling. For numerical comparisons, retain the run manifest, dataset selection, software versions, and hardware details with the generated results.
 
 ## 10. Citation
 

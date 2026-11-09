@@ -7,6 +7,10 @@ import numpy as np
 import torch
 
 from models.local_update import LocalSGD
+from utils.e2_online import (
+    coverage_bound, e2_online_init, e2_weight_source,
+    group_refresh_gap, normalize_counts,
+)
 from utils.state_dict_ops import (
     apply_buffer_endpoints_,
     capture_buffer_endpoint,
@@ -98,13 +102,17 @@ def _normalize_feature(feature: torch.Tensor) -> torch.Tensor:
     return feature
 
 
-def encode_client_feature(state, args, idx: int) -> torch.Tensor:
+def encode_feature_from_delta(state, args, delta) -> torch.Tensor:
     raw_delta = encode_delta_raw_count_sketch(
-        state['delta'][idx],
+        delta,
         state['count_sketch_plan'],
         state['group_proj_dim'],
     )
     return _normalize_feature(raw_delta)
+
+
+def encode_client_feature(state, args, idx: int) -> torch.Tensor:
+    return encode_feature_from_delta(state, args, state['delta'][idx])
 
 
 def _normalize_rows(X: torch.Tensor) -> torch.Tensor:
@@ -298,6 +306,10 @@ def sync_client_delays(state):
 
 
 def should_rebuild_groups(state, args) -> bool:
+    if state.get('e2_online_bootstrap_pending', False):
+        state['last_group_rebuild_reason'] = 'online_bootstrap'
+        return True
+
     if state['iterations'] <= 0:
         return False
 
@@ -325,8 +337,16 @@ def rebuild_direction_groups(state, args):
     target_groups = max(1, int(_getattr(args, 'dirbridge_num_groups', 5)))
     kmeans_iters = int(_getattr(args, 'dirbridge_kmeans_iters', 20))
 
+    seen_set = state.get('seen_set')
+    clustered_idx = [idx for idx in range(num_users) if seen_set is None or idx in seen_set]
+    if len(clustered_idx) < 1:
+        state['last_group_rebuild_reason'] = 'insufficient_seen_clients'
+        state['e2_clustered_clients'] = 0
+        return
+    state['e2_online_bootstrap_pending'] = False
+
     features = []
-    for idx in range(num_users):
+    for idx in clustered_idx:
         feature = state['client_features'][idx]
         if feature is None:
             feature = encode_client_feature(
@@ -357,17 +377,23 @@ def rebuild_direction_groups(state, args):
     actual_num_groups = int(group_centroids.shape[0])
 
     state['num_groups'] = actual_num_groups
-    state['group_ids'] = group_ids
     state['group_centroids'] = group_centroids
-    state['client_embeds'] = [feature.clone() for feature in features]
+    state['group_ids'] = [-1] * num_users
+    state['client_embeds'] = [None] * num_users
     state['group_members'] = [[] for _ in range(actual_num_groups)]
     state['group_counts'] = [0] * actual_num_groups
 
-    for idx, gid in enumerate(group_ids):
+    for pos, idx in enumerate(clustered_idx):
+        gid = int(group_ids[pos])
+        state['group_ids'][idx] = gid
+        state['client_embeds'][idx] = features[pos].clone()
         state['group_members'][gid].append(idx)
         state['group_counts'][gid] += 1
 
     state['last_group_rebuild'] = int(state['iterations'])
+    state['e2_clustered_clients'] = len(clustered_idx)
+    state['last_nonempty_groups'] = sum(count > 0 for count in state['group_counts'])
+    _update_e2_group_weights(state, args, clustered_idx, group_ids, group_centroids)
 
 
 def _refresh_ema_cache_delays(state):
@@ -449,6 +475,96 @@ def _remap_ema_group_cache_from_previous(state, previous):
     _refresh_ema_cache_delays(state)
 
 
+def _assign_arrivals_to_existing_groups(state, newly_seen):
+    centroids = state.get('group_centroids')
+    if centroids is None:
+        return []
+    assigned = []
+    for idx in newly_seen:
+        if int(state['group_ids'][idx]) >= 0:
+            continue
+        feature = state['client_features'][idx]
+        if feature is None:
+            continue
+        gid = int(torch.argmax(centroids.float() @ feature.float()))
+        state['group_ids'][idx] = gid
+        state['client_embeds'][idx] = feature.clone()
+        state['group_members'][gid].append(idx)
+        state['group_counts'][gid] += 1
+        assigned.append(idx)
+    if assigned:
+        state['last_assignment_reason'] = 'existing_centroid'
+        state['last_assigned_clients'] = list(assigned)
+    return assigned
+
+
+def _refresh_group_weights_from_current_assignments(state, args):
+    assigned_idx = [
+        idx for idx, gid in enumerate(state['group_ids'])
+        if int(gid) >= 0 and state['client_features'][idx] is not None
+    ]
+    if assigned_idx and state.get('group_centroids') is not None:
+        _update_e2_group_weights(
+            state, args, assigned_idx,
+            [int(state['group_ids'][idx]) for idx in assigned_idx],
+            state['group_centroids'],
+        )
+
+
+def _update_e2_group_weights(state, args, clustered_idx, group_ids, group_centroids):
+    source = e2_weight_source(args)
+    if e2_online_init(args) and source == 'full_count':
+        raise ValueError('online 初始化不能使用需要全体客户端方向的 full_count 权重')
+    counts = [0.0] * int(state['num_groups'])
+    if source == 'arrival_freq':
+        for idx, gid in zip(clustered_idx, group_ids):
+            counts[int(gid)] += float(state['arrival_count'][idx])
+    elif source == 'unique_client':
+        for gid in group_ids:
+            counts[int(gid)] += 1.0
+    else:
+        for gid in state['group_ids']:
+            if 0 <= int(gid) < len(counts):
+                counts[int(gid)] += 1.0
+    state['group_weights'] = normalize_counts(counts)
+    state['e2_last_weight_source'] = source
+    state['e2_weight_update_round'] = int(state['iterations'])
+
+
+def _record_arrivals(state, buffer_list):
+    newly_seen = []
+    for idx in buffer_list:
+        if idx not in state['seen_set']:
+            newly_seen.append(idx)
+        state['seen_set'].add(idx)
+        state['arrival_count'][idx] += 1
+        state['e2_client_last_arrival'][idx] = int(state['iterations'])
+    state['last_raw_arrival_count'] = len(buffer_list)
+    state['last_newly_seen_count'] = len(newly_seen)
+    return newly_seen
+
+
+def _update_e2_metrics(state, args):
+    num_users = len(state['delta'])
+    num_seen = len(state['seen_set'])
+    state['e2_metrics'] = {
+        'seen_clients': num_seen,
+        'seen_ratio': float(num_seen) / num_users if num_users else float('nan'),
+        'coverage_bound': coverage_bound(num_seen, num_users),
+        'clustered_clients': int(state.get('e2_clustered_clients', 0)),
+        'weight_source': state['e2_last_weight_source'],
+        'weight_l1_status': 'reference_unavailable',
+        'uninit_group_mass': None,
+        'raw_arrivals': int(state.get('last_raw_arrival_count', 0)),
+        'valid_updates': int(state.get('last_valid_buffer_count', 0)),
+        'used_updates': sum(item['member_count'] for item in state.get('last_selected_item_summary', [])),
+        'assigned_clients': sum(int(gid) >= 0 for gid in state['group_ids']),
+        'group_refresh_gap_mean': group_refresh_gap(
+            state['group_members'], state['e2_client_last_arrival'], state['iterations'],
+        ),
+    }
+
+
 def _build_ema_group_updates(state, args, buffer_list):
     delay_limit = float('inf') if _ablation_enabled(args, 'no_staleness_filter') else _buffer_delay_limit(args)
     use_ema_cache = not _ablation_enabled(args, 'no_ema_cache')
@@ -468,9 +584,14 @@ def _build_ema_group_updates(state, args, buffer_list):
     state['last_invalid_buffer_count'] = len(invalid_buffer_list)
 
     group_to_members = {}
+    unassigned_valid = []
     for idx in valid_buffer_list:
-        group_id = state['group_ids'][idx]
+        group_id = int(state['group_ids'][idx])
+        if group_id < 0:
+            unassigned_valid.append(idx)
+            continue
         group_to_members.setdefault(group_id, []).append(idx)
+    state['last_unassigned_valid_count'] = len(unassigned_valid)
 
     selected_items = []
     num_groups = int(state['num_groups'])
@@ -482,7 +603,11 @@ def _build_ema_group_updates(state, args, buffer_list):
 
     for group_id in range(num_groups):
         group_size = max(0, int(group_counts[group_id])) if group_id < len(group_counts) else 0
-        group_weight = float(group_size) / total_group_count
+        stored_weights = state.get('group_weights')
+        group_weight = (
+            float(stored_weights[group_id]) if stored_weights is not None
+            else float(group_size) / total_group_count
+        )
         if group_weight <= 0.0:
             continue
 
@@ -567,21 +692,51 @@ def _schedule_new_clients(state, args, active_list, num_to_launch, random_cost):
     sampled_idx = [idx for idx in range(args.num_users) if idx not in active_list]
     np.random.shuffle(sampled_idx)
     sampled_idx = sampled_idx[:num_to_launch]
+    if len(sampled_idx) < num_to_launch:
+        completed_idx = [
+            idx for idx in active_list
+            if state['cost'][idx] <= 0 and idx not in state['inflight']
+        ]
+        np.random.shuffle(completed_idx)
+        sampled_idx.extend(completed_idx[:num_to_launch - len(sampled_idx)])
 
     for idx in sampled_idx:
-        delta = local_train_delta(state, args, idx)
-        state['delta'][idx] = delta
-        state['client_features'][idx] = encode_client_feature(
-            state,
-            args,
-            idx,
-        )
-        state['stamp'][idx] = state['iterations']
+        # 本地训练会捕获BN端点；在结果真正到达之前保持服务器旧端点可见。
+        endpoints = state.get('buffer_endpoints')
+        previous_endpoint = endpoints[idx] if endpoints is not None else None
+        try:
+            delta = local_train_delta(state, args, idx)
+            endpoint = endpoints[idx] if endpoints is not None else None
+        finally:
+            if endpoints is not None:
+                endpoints[idx] = previous_endpoint
+        state['inflight'][idx] = {
+            'delta': delta,
+            'feature': encode_feature_from_delta(state, args, delta),
+            'stamp': int(state['iterations']),
+            'buffer_endpoint': endpoint,
+        }
         state['cost'][idx] = state['global_cost'] + random_cost(idx)
+
+
+def _materialize_arrivals(state, buffer_list):
+    inflight = state['inflight']
+    if len(set(buffer_list)) != len(buffer_list) or any(idx not in inflight for idx in buffer_list):
+        raise RuntimeError('客户端到达时缺少唯一的在途结果')
+    for idx in buffer_list:
+        record = inflight.pop(idx)
+        state['delta'][idx] = record['delta']
+        state['client_features'][idx] = record['feature']
+        state['stamp'][idx] = int(record['stamp'])
+        if 'buffer_endpoints' in state:
+            state['buffer_endpoints'][idx] = record['buffer_endpoint']
 
 
 def init_state(state, args, random_cost):
     num_users = int(args.num_users)
+    online_init = e2_online_init(args)
+    if online_init and e2_weight_source(args) == 'full_count':
+        raise ValueError('online 初始化不能使用需要全体客户端方向的 full_count 权重')
 
     state['delta'] = [sd_zero_like(state['w_glob']) for _ in range(num_users)]
     state['stamp'] = [0] * num_users
@@ -619,6 +774,33 @@ def init_state(state, args, random_cost):
     state['client_embeds'] = [None] * num_users
     state['last_group_rebuild'] = 0
     state['last_group_rebuild_reason'] = 'init'
+    state['group_weights'] = [0.0] * state['num_groups']
+    state['inflight'] = {}
+    state['arrival_count'] = [0] * num_users
+    state['e2_client_last_arrival'] = [-1] * num_users
+    state['seen_set'] = set()
+    state['e2_init_mode'] = 'online' if online_init else 'full'
+    state['e2_weight_source'] = e2_weight_source(args)
+    state['e2_last_weight_source'] = state['e2_weight_source']
+    state['e2_clustered_clients'] = 0
+    state['e2_init_cost_status'] = 'training_init_only_until_main_wrap'
+    state['e2_init_oracle_time_sec'] = 0.0
+    state['e2_online_bootstrap_time_sec'] = 0.0
+    state['e2_online_bootstrap_pending'] = bool(online_init)
+    state['recluster_count'] = 0
+    state['last_recluster_time_sec'] = 0.0
+    state['total_recluster_time_sec'] = 0.0
+    state['max_recluster_time_sec'] = 0.0
+
+    if online_init:
+        state['stamp'] = [-1] * num_users
+        sync_client_delays(state)
+        state['last_grouping_method'] = 'none'
+        start_time = time.perf_counter()
+        _schedule_new_clients(state, args, [], min(int(args.concurrency), num_users), random_cost)
+        state['e2_online_bootstrap_time_sec'] = time.perf_counter() - start_time
+        _update_e2_metrics(state, args)
+        return state
 
     for idx in range(num_users):
         delta = local_train_delta(state, args, idx)
@@ -629,6 +811,7 @@ def init_state(state, args, random_cost):
             idx,
         )
 
+    state['seen_set'] = set(range(num_users))
     sync_client_delays(state)
     state['recluster_count'] = 0
     state['last_recluster_time_sec'] = 0.0
@@ -645,8 +828,17 @@ def init_state(state, args, random_cost):
 
     sampled_idx = random.sample(range(num_users), min(int(args.concurrency), num_users))
     for idx in sampled_idx:
+        state['inflight'][idx] = {
+            'delta': state['delta'][idx],
+            'feature': state['client_features'][idx],
+            'stamp': int(state['stamp'][idx]),
+            'buffer_endpoint': state.get('buffer_endpoints', [None] * num_users)[idx],
+        }
         state['cost'][idx] = random_cost(idx)
+    if 'buffer_endpoints' in state:
+        state['buffer_endpoints'] = [None] * num_users
 
+    _update_e2_metrics(state, args)
     return state
 
 
@@ -674,6 +866,12 @@ def run_round(state, args, random_cost):
     state['last_buffer_list'] = list(buffer_list)
     state['last_selected_item_summary'] = []
     state['last_regrouped'] = False
+    _materialize_arrivals(state, buffer_list)
+    newly_seen = _record_arrivals(state, buffer_list)
+    assigned = _assign_arrivals_to_existing_groups(state, newly_seen)
+    state['last_assigned_on_arrival_count'] = len(assigned)
+    if (assigned or e2_weight_source(args) == 'arrival_freq') and not should_rebuild_groups(state, args):
+        _refresh_group_weights_from_current_assignments(state, args)
 
     sync_client_delays(state)
 
@@ -707,6 +905,7 @@ def run_round(state, args, random_cost):
             'member_count': int(item.get('member_count', 0)),
             'cache_fill_count': float(item.get('cache_fill_count', 0.0)),
             'target_buffer_count': float(item.get('target_buffer_count', 0.0)),
+            'group_size': int(item.get('group_size', 0)),
         }
         for item in selected_items
         if item.get('kind') == 'group'
@@ -719,12 +918,14 @@ def run_round(state, args, random_cost):
         sync_client_delays(state)
         _refresh_ema_cache_delays(state)
         _schedule_new_clients(state, args, active_list, len(buffer_list), random_cost)
+        _update_e2_metrics(state, args)
         return state
 
     aggregated_diff = grouped_buffered_aggregation(selected_items, state['w_glob'])
+    server_lr = float(_getattr(args, 'global_lr', 1.0))
     with torch.no_grad():
         for key in aggregated_diff.keys():
-            state['w_glob'][key] += aggregated_diff[key]
+            state['w_glob'][key] += server_lr * aggregated_diff[key]
     load_param_dict_(state['net_glob'], state['w_glob'])
     if valid_buffer_list:
         apply_buffer_endpoints_(state, valid_buffer_list)
@@ -739,4 +940,5 @@ def run_round(state, args, random_cost):
     if regrouped:
         _refresh_ema_cache_delays(state)
 
+    _update_e2_metrics(state, args)
     return state
