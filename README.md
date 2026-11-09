@@ -53,7 +53,6 @@ The captured reference versions are also recorded in `requirements.txt` and `env
 - Pillow 11.3.0
 - tqdm 4.67.1
 - pandas 2.3.3
-- GPU: NVIDIA GeForce RTX 5090 D
 
 A GPU is recommended for full reproduction. The quick smoke test can be used to verify the environment before launching the full multi-seed experiments.
 

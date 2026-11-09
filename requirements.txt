@@ -1,5 +1,5 @@
-# Runtime versions captured on desktop yibo environment (/home/jczn2/.conda/envs/yibo)
-# Hardware: NVIDIA GeForce RTX 5090 D, CUDA 12.8, cuDNN 91002
+# Reference software environment
+# CUDA 12.8, cuDNN 91002
 # Python: 3.9.23
 numpy==2.0.2
 scipy==1.13.1
